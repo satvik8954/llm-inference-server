@@ -1,0 +1,31 @@
+{
+  "title": "LLM Inference Server",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Request Rate",
+      "targets": [{"expr": "rate(inference_requests_total[1m])"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency p95",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(inference_latency_seconds_bucket[5m])))"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Batch Size",
+      "targets": [{"expr": "rate(batch_size_sum[1m]) / rate(batch_size_count[1m])"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "KV Cache Hit Rate",
+      "targets": [{"expr": "rate(kv_cache_hits_total[1m]) / (rate(kv_cache_hits_total[1m]) + rate(kv_cache_misses_total[1m]))"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    }
+  ]
+}
