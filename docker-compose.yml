@@ -1,0 +1,58 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    command: ["python", "-m", "server.batch_scheduler"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      METRICS_PORT: 9101
+      MAX_BATCH_SIZE: 8
+      MAX_WAIT_MS: 50
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      WORKER_METRICS_PORT: 9102
+      MAX_CACHE_ENTRIES: 32
+    depends_on:
+      - redis
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+      - scheduler
+      - worker
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus

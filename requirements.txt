@@ -1,0 +1,19 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+redis==5.2.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+prometheus-client==0.21.1
+locust==2.32.5
+pytest==8.3.4
+pytest-asyncio==0.25.0
+httpx==0.28.1
+fakeredis==2.26.2
+
+# Real model inference (replaces the old Ollama-wrapper approach).
+# NOTE: torch is installed separately with the correct CUDA index URL,
+# not from this file - see README for the install command matching your
+# GPU driver, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+transformers==4.47.1
+accelerate==1.2.1
