@@ -22,6 +22,11 @@ class BatchScheduler:
         QUEUE_DEPTH.set(depth)
         if depth == 0:
             return False
+        # In backpressure mode, requests keep accumulating in the pending set
+        # while the workers are occupied, so the next batch is claimed when a
+        # worker frees up instead of being split into tiny early batches.
+        if settings.dispatch_mode == "backpressure" and not await self.queue.worker_capacity_free():
+            return False
         if depth >= settings.max_batch_size:
             return True
         oldest = await self.queue.peek_oldest(1)
@@ -43,9 +48,10 @@ class BatchScheduler:
 
     async def run_forever(self) -> None:
         logger.info(
-            "scheduler started max_batch_size=%s max_wait_ms=%s",
+            "scheduler started max_batch_size=%s max_wait_ms=%s dispatch_mode=%s",
             settings.max_batch_size,
             settings.max_wait_ms,
+            settings.dispatch_mode,
         )
         while True:
             dispatched = await self.run_once()

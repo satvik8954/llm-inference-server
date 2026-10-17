@@ -83,14 +83,23 @@ class ModelWorker:
         )
 
     async def run_forever(self) -> None:
-        await self.redis.sadd("workers:active", self.worker_id)
+        # Clear a stale busy flag left by a previous run of this worker id.
+        await self.redis.srem(settings.busy_workers_key, self.worker_id)
+        await self.redis.sadd(settings.active_workers_key, self.worker_id)
         logger.info("worker started worker_id=%s", self.worker_id)
         try:
             while True:
                 _, payload = await self.redis.brpop(settings.worker_batch_queue)
-                await self.process_batch(json.loads(payload))
+                # The busy flag lets a backpressure-mode scheduler hold the
+                # next batch until this one finishes.
+                await self.redis.sadd(settings.busy_workers_key, self.worker_id)
+                try:
+                    await self.process_batch(json.loads(payload))
+                finally:
+                    await self.redis.srem(settings.busy_workers_key, self.worker_id)
         finally:
-            await self.redis.srem("workers:active", self.worker_id)
+            await self.redis.srem(settings.busy_workers_key, self.worker_id)
+            await self.redis.srem(settings.active_workers_key, self.worker_id)
 
 
 async def main() -> None:

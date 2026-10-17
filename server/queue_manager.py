@@ -43,6 +43,15 @@ class QueueManager:
     async def queue_depth(self) -> int:
         return int(await self.redis.zcard(settings.pending_queue_key))
 
+    async def worker_capacity_free(self) -> bool:
+        """True if some worker is idle with nothing already queued for it."""
+        pipe = self.redis.pipeline()
+        pipe.llen(settings.worker_batch_queue)
+        pipe.scard(settings.busy_workers_key)
+        pipe.scard(settings.active_workers_key)
+        queued, busy, active = await pipe.execute()
+        return int(queued) + int(busy) < max(1, int(active))
+
     async def peek_oldest(self, count: int = 1) -> list[QueuedRequest]:
         request_ids = await self.redis.zrange(settings.pending_queue_key, 0, count - 1)
         if not request_ids:

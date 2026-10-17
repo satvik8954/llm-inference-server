@@ -5,6 +5,12 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     max_batch_size: int = 8
     max_wait_ms: int = 50
+    # "eager": dispatch as soon as the size/age trigger fires (original behaviour).
+    # "backpressure": additionally hold batches back while every worker is
+    # busy or already has a batch waiting, so batches form at worker-free time.
+    dispatch_mode: str = "eager"
+    active_workers_key: str = "workers:active"
+    busy_workers_key: str = "workers:busy"
     request_timeout_ms: int = 10_000
     result_ttl_seconds: int = 60
     request_ttl_seconds: int = 120
