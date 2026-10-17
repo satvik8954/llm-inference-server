@@ -3,12 +3,19 @@ import json
 import logging
 import os
 import socket
+import time
 
 from prometheus_client import start_http_server
 from redis.asyncio import Redis
 
 from server.config import settings
-from server.metrics import CACHE_HITS, CACHE_MISSES, WORKER_BATCHES, WORKER_REQUESTS
+from server.metrics import (
+    CACHE_HITS,
+    CACHE_MISSES,
+    REQUEST_TIMEOUTS,
+    WORKER_BATCHES,
+    WORKER_REQUESTS,
+)
 from server.queue_manager import QueueManager
 from server.schemas import QueuedRequest
 from worker.kv_cache import KVCacheManager
@@ -31,7 +38,33 @@ class ModelWorker:
             QueuedRequest.model_validate(request)
             for request in batch_payload["requests"]
         ]
-        results = await self.model.generate_batch(requests)
+
+        # Drop requests whose client has already given up. A request enqueued
+        # more than timeout_ms ago has almost certainly already received a
+        # 408 from the API's own wait loop - running generation for it just
+        # burns GPU time on a response nobody will read, and (worse) lets an
+        # overload backlog keep consuming worker capacity long after the
+        # traffic that caused it has stopped. This does not fix GPU
+        # throughput; it stops wasting it on dead work.
+        now_ms = int(time.time() * 1000)
+        live: list[QueuedRequest] = []
+        expired: list[QueuedRequest] = []
+        for req in requests:
+            if now_ms - req.enqueue_time_ms > req.timeout_ms:
+                expired.append(req)
+            else:
+                live.append(req)
+
+        for req in expired:
+            REQUEST_TIMEOUTS.inc()
+            logger.info(
+                "dropped expired request_id=%s waited_ms=%s timeout_ms=%s",
+                req.request_id,
+                now_ms - req.enqueue_time_ms,
+                req.timeout_ms,
+            )
+
+        results = await self.model.generate_batch(live) if live else []
         for result in results:
             if result["cache_hit"]:
                 CACHE_HITS.inc()
@@ -42,9 +75,10 @@ class ModelWorker:
         WORKER_BATCHES.inc()
         WORKER_REQUESTS.inc(len(results))
         logger.info(
-            "processed batch_id=%s size=%s worker_id=%s",
+            "processed batch_id=%s size=%s dropped=%s worker_id=%s",
             batch_payload["batch_id"],
             len(results),
+            len(expired),
             self.worker_id,
         )
 
