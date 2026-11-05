@@ -19,7 +19,6 @@ from server.metrics import (
 from server.queue_manager import QueueManager
 from server.schemas import QueuedRequest
 from worker.kv_cache import KVCacheManager
-from worker.model_loader import RealModel
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -27,11 +26,17 @@ logger = logging.getLogger("worker")
 
 
 class ModelWorker:
-    def __init__(self, redis: Redis, worker_id: str):
+    def __init__(self, redis: Redis, worker_id: str, model=None):
         self.redis = redis
         self.worker_id = worker_id
         self.queue = QueueManager(redis)
-        self.model = RealModel(KVCacheManager(settings.max_cache_entries))
+        if model is None:
+            # Imported here so tests can drive the worker loop with a test
+            # double without importing torch or loading weights.
+            from worker.model_loader import RealModel
+
+            model = RealModel(KVCacheManager(settings.max_cache_entries))
+        self.model = model
 
     async def process_batch(self, batch_payload: dict[str, object]) -> None:
         requests = [
@@ -83,23 +88,46 @@ class ModelWorker:
         )
 
     async def run_forever(self) -> None:
-        # Clear a stale busy flag left by a previous run of this worker id.
-        await self.redis.srem(settings.busy_workers_key, self.worker_id)
+        inflight_key = QueueManager.inflight_key(self.worker_id)
+        await self.requeue_leftover_inflight(inflight_key)
         await self.redis.sadd(settings.active_workers_key, self.worker_id)
         logger.info("worker started worker_id=%s", self.worker_id)
         try:
             while True:
-                _, payload = await self.redis.brpop(settings.worker_batch_queue)
-                # The busy flag lets a backpressure-mode scheduler hold the
-                # next batch until this one finishes.
-                await self.redis.sadd(settings.busy_workers_key, self.worker_id)
-                try:
-                    await self.process_batch(json.loads(payload))
-                finally:
-                    await self.redis.srem(settings.busy_workers_key, self.worker_id)
+                await self.run_once(inflight_key)
         finally:
-            await self.redis.srem(settings.busy_workers_key, self.worker_id)
             await self.redis.srem(settings.active_workers_key, self.worker_id)
+
+    async def run_once(self, inflight_key: str, timeout_s: int = 1) -> bool:
+        """Take one batch (waiting up to timeout_s) and process it."""
+        # BLMOVE pops the batch and records it as this worker's in-flight
+        # batch in one atomic step. With a separate BRPOP + "mark busy", a
+        # backpressure scheduler checking in between saw the worker as idle
+        # with nothing queued and dispatched an extra, smaller batch.
+        payload = await self.redis.blmove(
+            settings.worker_batch_queue, inflight_key, timeout_s, "RIGHT", "LEFT"
+        )
+        if payload is None:  # timed out with nothing queued
+            return False
+        try:
+            await self.process_batch(json.loads(payload))
+        finally:
+            await self.redis.lrem(inflight_key, 1, payload)
+        return True
+
+    async def requeue_leftover_inflight(self, inflight_key: str) -> None:
+        """Return batches a previous run of this worker id never finished.
+
+        RPUSH puts them at the consuming end of the batch queue so they run
+        next; process_batch still drops any request that has since expired.
+        """
+        while True:
+            payload = await self.redis.lmove(
+                inflight_key, settings.worker_batch_queue, "RIGHT", "RIGHT"
+            )
+            if payload is None:
+                return
+            logger.info("requeued unfinished batch from previous run worker_id=%s", self.worker_id)
 
 
 async def main() -> None:

@@ -10,7 +10,11 @@ class Settings(BaseSettings):
     # busy or already has a batch waiting, so batches form at worker-free time.
     dispatch_mode: str = "eager"
     active_workers_key: str = "workers:active"
-    busy_workers_key: str = "workers:busy"
+    # Each worker atomically moves the batch it is processing from
+    # worker_batch_queue into its own in-flight list (BLMOVE), so a batch is
+    # always counted in exactly one place and never "disappears" between pop
+    # and busy-marking.
+    inflight_key_prefix: str = "worker:inflight:"
     request_timeout_ms: int = 10_000
     result_ttl_seconds: int = 60
     request_ttl_seconds: int = 120

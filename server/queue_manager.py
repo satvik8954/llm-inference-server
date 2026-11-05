@@ -45,12 +45,22 @@ class QueueManager:
 
     async def worker_capacity_free(self) -> bool:
         """True if some worker is idle with nothing already queued for it."""
+        active = await self.redis.smembers(settings.active_workers_key)
+        # MULTI/EXEC (redis-py pipelines are transactional by default) reads
+        # the batch queue and every in-flight list at one instant. A worker's
+        # BLMOVE moves a batch between those lists atomically, so the batch
+        # is counted exactly once whichever side of the move we observe.
         pipe = self.redis.pipeline()
         pipe.llen(settings.worker_batch_queue)
-        pipe.scard(settings.busy_workers_key)
-        pipe.scard(settings.active_workers_key)
-        queued, busy, active = await pipe.execute()
-        return int(queued) + int(busy) < max(1, int(active))
+        for worker_id in active:
+            pipe.llen(self.inflight_key(worker_id))
+        queued, *inflight = await pipe.execute()
+        busy = sum(1 for length in inflight if int(length) > 0)
+        return int(queued) + busy < max(1, len(active))
+
+    @staticmethod
+    def inflight_key(worker_id: str) -> str:
+        return f"{settings.inflight_key_prefix}{worker_id}"
 
     async def peek_oldest(self, count: int = 1) -> list[QueuedRequest]:
         request_ids = await self.redis.zrange(settings.pending_queue_key, 0, count - 1)
