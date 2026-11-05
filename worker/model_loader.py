@@ -6,6 +6,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from server.schemas import QueuedRequest
 from worker.kv_cache import KVCacheManager
+from worker.prompting import render_chat_prompts
 
 MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
@@ -85,14 +86,16 @@ class RealModel:
         return results  # type: ignore
 
     def _generate_real_batch(self, reqs: list[QueuedRequest]) -> list[str]:
-        prompts = [
-            (req.system_prompt + "\n" + req.prompt) if req.system_prompt else req.prompt
-            for req in reqs
-        ]
+        prompts, add_special_tokens = render_chat_prompts(self.tokenizer, reqs)
         max_new = min(max(req.max_tokens for req in reqs), 512)
         min_new = min(8, max_new)
 
-        inputs = self.tokenizer(prompts, return_tensors="pt", padding=True).to(self.device)
+        inputs = self.tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            add_special_tokens=add_special_tokens,
+        ).to(self.device)
 
         with torch.no_grad():
             output = self.model.generate(
